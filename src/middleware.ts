@@ -10,11 +10,21 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const PUBLIC_PATHS = ["/login", "/api/auth/login"];
 
+// Loopback callers (Docker healthcheck, local smoke tests) talk plain HTTP
+// directly to the origin — never bounce them to an https URL it doesn't serve.
+function isLoopback(host: string | null): boolean {
+  if (!host) return false;
+  const hostname = host.startsWith("[")
+    ? host.slice(1, host.indexOf("]"))
+    : host.split(":")[0];
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  // ── 1. HTTPS redirect (production only) ──
-  if (process.env.NODE_ENV === "production") {
+  // ── 1. HTTPS redirect (production only, non-loopback hosts only) ──
+  if (process.env.NODE_ENV === "production" && !isLoopback(request.headers.get("host"))) {
     const proto = request.headers.get("x-forwarded-proto");
     if (proto && proto !== "https") {
       return NextResponse.redirect(
