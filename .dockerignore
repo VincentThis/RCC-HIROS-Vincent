@@ -1,0 +1,34 @@
+# Dependencies & build output
+node_modules
+.next
+out
+build
+src/generated
+
+# Secrets — never bake into the image
+.env
+.env.*
+!.env.example
+
+# Local data (persisted via Docker volumes instead)
+uploads
+backups
+db
+
+# Not needed inside the image
+kiosk-service
+*.bat
+*.log
+scripts
+worklog
+
+# VCS / tooling / docs
+.git
+.github
+.opencode
+.playwright-mcp
+README.md
+DEPLOYMENT.md
+*.docx
+Dockerfile
+docker-compose.yml
