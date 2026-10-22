@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────
+# RCC-HIROS — production stack (on-prem server PC)
+#   app (Next.js) + MariaDB, exposed publicly via Cloudflare Tunnel
+# Usage:
+#   1. cp .env.example .env   (set JWT_SECRET + DB_PASSWORD)
+#   2. docker compose up -d --build
+# ─────────────────────────────────────────────────────────────
+
+name: rcc-hiros
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_KIOSK_SERVICE_URL: ${NEXT_PUBLIC_KIOSK_SERVICE_URL:-http://127.0.0.1:8765}
+    image: rcc-hiros-app
+    ports:
+      - "3000:3000"
+    environment:
+      # Overrides any DATABASE_URL baked at build time — points at the
+      # mariadb service on the compose network.
+      DATABASE_URL: mysql://root:${DB_PASSWORD:?Set DB_PASSWORD in .env}@mariadb:3306/rcc_hiros
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      NEXT_PUBLIC_KIOSK_SERVICE_URL: ${NEXT_PUBLIC_KIOSK_SERVICE_URL:-http://127.0.0.1:8765}
+    volumes:
+      # Employee photos & uploaded files survive container rebuilds
+      - uploads:/app/uploads
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MARIADB_DATABASE: rcc_hiros
+    volumes:
+      - db:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  db:
+  uploads:
