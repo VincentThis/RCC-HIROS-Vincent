@@ -43,8 +43,10 @@ COPY --from=build /app/public ./public
 # - full node_modules: provides the Prisma CLI (migrate deploy) and
 #   sharp (serverExternalPackages) on top of the standalone bundle
 # - prisma/ + prisma.config.ts + package.json: schema, migrations, seeds
+# - src/: seed.ts imports ../src/lib/db and the generated Prisma client
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/src ./src
 COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /app/package.json ./package.json
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

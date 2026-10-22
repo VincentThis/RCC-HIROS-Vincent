@@ -117,6 +117,11 @@ push to main (merge) ──► CD (self-hosted Windows runner on the server PC)
   PRs, so production only changes when code lands on the production branch.
 * The self-hosted runner polls GitHub over outbound HTTPS, so the server
   PC needs **no inbound firewall rules**.
+* The health check fetches `http://127.0.0.1:3000` from inside the
+  container over plain HTTP. `src/middleware.ts` therefore skips its
+  production HTTPS redirect for **loopback hosts** (`localhost`,
+  `127.0.0.1`, `::1`); public traffic arriving via the tunnel still
+  gets the HTTPS redirect + HSTS.
 
 ## 5. Files added for deployment
 
@@ -135,28 +140,68 @@ push to main (merge) ──► CD (self-hosted Windows runner on the server PC)
 | Variable | Where used | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | app container (runtime), Prisma CLI | Compose builds it from `DB_PASSWORD` and points at the `mariadb` service — never committed |
-| `DB_PASSWORD` | compose interpolation | Root password for containerized MariaDB; set in `.env` (gitignored) |
-| `JWT_SECRET` | app container | Signs auth tokens; set a strong random value in `.env` — **never** committed, never baked into the image |
+| `DB_PASSWORD` | compose interpolation (CD job) | Root password for containerized MariaDB; stored as a **GitHub Actions repo secret** |
+| `JWT_SECRET` | app container (CD job) | Signs auth tokens; strong random value stored as a **GitHub Actions repo secret** — never committed, never baked into the image |
 | `NEXT_PUBLIC_KIOSK_SERVICE_URL` | build arg + runtime | Loopback URL of the kiosk service; inlined into the client bundle at build time |
 
-`.env` is git-ignored and excluded via `.dockerignore`, so secrets exist
-only on the server PC. CI uses throwaway dummy values that are never
-exposed to the runtime stack.
+**How secrets reach production:** the CD job in
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) declares
+`JWT_SECRET` and `DB_PASSWORD` from the repository's encrypted
+**Actions secrets** (Settings → Secrets and variables → Actions). They are
+exported only into the deploy job's environment, where `docker-compose.yml`
+interpolates them into the container configuration. They never exist in the
+repository, the git history, or the runner workspace. CI uses throwaway
+dummy values that are never exposed to the runtime stack.
 
-## 7. One-time server setup
+For **manual** `docker compose` runs directly on the server PC (outside the
+pipeline), place a `.env` file next to `docker-compose.yml` (copy
+`.env.example`); compose reads it for the same two variables. `.env` is
+git-ignored and excluded via `.dockerignore`.
 
-1. **Docker Desktop** (WSL2 backend) — https://docs.docker.com/desktop/setup/install/windows-install/
-2. **App secrets:** `copy .env.example .env`, then set strong `JWT_SECRET`
-   (`openssl rand -base64 64`) and a `DB_PASSWORD`.
-3. **GitHub self-hosted runner:** repo → *Settings → Actions → Runners →
-   New self-hosted runner (Windows x64)* → follow the configure script,
-   register it as a **service**, and give the runner's account access to
-   the Docker CLI (member of the `docker-users` group).
-4. **cloudflared:** install from
-   https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-   then run `scripts\start-tunnel.bat` and copy the printed
-   `*.trycloudflare.com` URL — that is the **Live URL** to submit.
-5. **(Optional) import existing dev data** from XAMPP:
+## 7. One-time server setup (as actually performed)
+
+Verified versions on the server PC: **WSL 3.0.3**, **Docker Desktop
+4.96.1** (engine **29.9.2**, Compose **v5.6.0**, Buildx **v0.38.1**,
+WSL2 backend, default distro `docker-desktop`), container runtime
+**Node 22** (alpine), GitHub runner **Windows x64**.
+
+1. **Virtual Machine Platform + WSL:** install WSL 3.0.3 (`wsl.msi`),
+   enable the `Virtual Machine Platform` Windows feature
+   (`DISM /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /All`
+   + reboot). Docker Desktop's WSL2 backend needs both.
+2. **Docker Desktop:** install via `winget install Docker.Desktop`
+   (WSL2 backend is the default). Onboarding accepted; Docker Desktop
+   autostarts at logon (`HKCU\...\Run`).
+3. **PowerShell execution policy:** GitHub Actions writes per-step
+   `.ps1` scripts, which the Windows default `Restricted` policy blocks
+   (`running scripts is disabled on this system` → CD job fails at its
+   first step). Fix once per user:
+   ```
+   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+   ```
+4. **GitHub self-hosted runner:** repo → *Settings → Actions → Runners →
+   New self-hosted runner (Windows x64)* → `config.cmd`, registered for
+   **this user interactively** (not the optional `--runasservice`), so it
+   inherits the user's Docker Desktop access. Files live in
+   `C:\deploy\runner`; runner name **`rcc-hiros-server`**
+   (labels `self-hosted`/`Windows`/`X64`). Autostart at logon:
+   `HKCU\...\Run` value **`RCC-HIROS-Runner`** →
+   `wscript C:\deploy\run-hidden.vbs` (hides the console window).
+5. **App secrets → GitHub Actions repo secrets:** *Settings → Secrets and
+   variables → Actions* → set **`JWT_SECRET`** (strong random) and
+   **`DB_PASSWORD`**. The CD job injects them into `docker compose` at
+   deploy time (see §6); no `.env` file is required for pipeline deploys.
+6. **cloudflared:** download `cloudflared.exe`, then start the quick
+   tunnel (equivalent to `scripts\start-tunnel.bat`):
+   ```
+   cloudflared tunnel --url http://localhost:3000
+   ```
+   Copy the printed `*.trycloudflare.com` URL — that is the **Live URL**
+   to submit. The URL is only valid while that process runs.
+7. **Seed the fresh database** (no XAMPP/MySQL on this machine — the DB
+   is the containerized MariaDB) with demo data + the admin account
+   (see §8 for the command).
+8. **(Optional) import existing dev data** from XAMPP:
    ```
    mysqldump -u root rcc_hiros > dump.sql
    docker compose exec -T mariadb mariadb -u root -p%DB_PASSWORD% rcc_hiros < dump.sql
@@ -169,6 +214,7 @@ exposed to the runtime stack.
 | Start / stop the stack | `docker compose up -d` / `docker compose down` |
 | View logs | `docker compose logs -f app` |
 | Deploy a change | merge to `main` → Actions handles the rest |
+| Seed / re-seed demo data | `docker compose -p rcc-hiros exec -w /app app npx tsx prisma/seed.ts` (idempotent upserts; admin login: `admin@rcc.edu.ph` / `RCC2026!`) |
 | DB backup | `docker compose exec -T mariadb mysqldump -u root -p%DB_PASSWORD% rcc_hiros > backup.sql` |
 | DB restore | `docker compose exec -T mariadb mariadb -u root -p%DB_PASSWORD% rcc_hiros < backup.sql` |
 | Rollback | `git revert <bad-commit>` and push to `main` (pipeline redeploys) |
